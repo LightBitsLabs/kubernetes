@@ -1,0 +1,10 @@
+FROM busybox:latest
+
+ARG GIT_VER
+ARG GIT_BRANCH
+ENV git.ver=${GIT_VER}
+ENV git.branch=${GIT_BRANCH}
+
+RUN mkdir -p /e2e-binaries
+COPY ./_output/dockerized/bin/linux/amd64/e2e.test /e2e-binaries
+COPY ./_output/local/bin/linux/amd64/ginkgo /e2e-binaries
