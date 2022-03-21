@@ -58,6 +58,7 @@ type StorageClassTest struct {
 	PvCheck              func(claim *v1.PersistentVolumeClaim)
 	VolumeMode           v1.PersistentVolumeMode
 	AllowVolumeExpansion bool
+	KeepSC               bool
 }
 
 type provisioningTestSuite struct {
@@ -216,6 +217,7 @@ func (p *provisioningTestSuite) DefineTests(driver TestDriver, pattern testpatte
 		expectedContent := fmt.Sprintf("Hello from namespace %s", f.Namespace.Name)
 		dataSource, cleanupFunc := prepareSnapshotDataSourceForProvisioning(f, testConfig, l.config, pattern, l.cs, dc, l.pvc, l.sc, sDriver, pattern.VolMode, expectedContent)
 		defer cleanupFunc()
+		l.testCase.KeepSC = true
 
 		l.pvc.Spec.DataSource = dataSource
 		l.testCase.PvCheck = func(claim *v1.PersistentVolumeClaim) {
@@ -244,6 +246,7 @@ func (p *provisioningTestSuite) DefineTests(driver TestDriver, pattern testpatte
 		expectedContent := fmt.Sprintf("Hello from namespace %s", f.Namespace.Name)
 		dataSource, dataSourceCleanup := preparePVCDataSourceForProvisioning(f, testConfig, l.cs, l.sourcePVC, l.sc, pattern.VolMode, expectedContent)
 		defer dataSourceCleanup()
+		l.testCase.KeepSC = true
 
 		l.pvc.Spec.DataSource = dataSource
 		l.testCase.PvCheck = func(claim *v1.PersistentVolumeClaim) {
@@ -278,6 +281,7 @@ func (p *provisioningTestSuite) DefineTests(driver TestDriver, pattern testpatte
 		dataSource, dataSourceCleanup := preparePVCDataSourceForProvisioning(f, testConfig, l.cs, l.sourcePVC, l.sc, pattern.VolMode, expectedContent)
 		defer dataSourceCleanup()
 		l.pvc.Spec.DataSource = dataSource
+		l.testCase.KeepSC = true
 
 		var wg sync.WaitGroup
 		for i := 0; i < 5; i++ {
@@ -332,6 +336,10 @@ func (t StorageClassTest) TestDynamicProvisioning() *v1.PersistentVolume {
 		class, err = client.StorageV1().StorageClasses().Get(context.TODO(), class.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 		defer func() {
+			if t.KeepSC {
+				framework.Logf("asked to skip deletion of storage class %s", class.Name)
+				return
+			}
 			framework.Logf("deleting storage class %s", class.Name)
 			framework.ExpectNoError(client.StorageV1().StorageClasses().Delete(context.TODO(), class.Name, metav1.DeleteOptions{}))
 		}()
@@ -798,11 +806,18 @@ func prepareSnapshotDataSourceForProvisioning(
 	}
 
 	cleanupFunc := func() {
+		pv, err := getBoundPV(client, updatedClaim)
+		framework.ExpectNoError(err)
+
 		framework.Logf("deleting initClaim %q/%q", updatedClaim.Namespace, updatedClaim.Name)
 		err = client.CoreV1().PersistentVolumeClaims(updatedClaim.Namespace).Delete(context.TODO(), updatedClaim.Name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			framework.Failf("Error deleting initClaim %q. Error: %v", updatedClaim.Name, err)
 		}
+
+		framework.Logf("poll 30s for claim's %q/%q PV %q to be deleted before deleting SC %q. see https://lightbitslabs.atlassian.net/browse/LBM1-19772",
+			updatedClaim.Namespace, updatedClaim.Name, pv.Name, class.Name)
+		framework.ExpectNoError(e2epv.WaitForPersistentVolumeDeleted(client, pv.Name, 5*time.Second, 30*time.Second))
 
 		err = snapshotResource.CleanupResource()
 		framework.ExpectNoError(err)
@@ -853,11 +868,18 @@ func preparePVCDataSourceForProvisioning(
 	}
 
 	cleanupFunc := func() {
+		pv, err := getBoundPV(client, sourcePVC)
+		framework.ExpectNoError(err)
+
 		framework.Logf("deleting source PVC %q/%q", sourcePVC.Namespace, sourcePVC.Name)
-		err := client.CoreV1().PersistentVolumeClaims(sourcePVC.Namespace).Delete(context.TODO(), sourcePVC.Name, metav1.DeleteOptions{})
+		err = client.CoreV1().PersistentVolumeClaims(sourcePVC.Namespace).Delete(context.TODO(), sourcePVC.Name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			framework.Failf("Error deleting source PVC %q. Error: %v", sourcePVC.Name, err)
 		}
+		framework.Logf("poll 30s for claim's %q/%q PV %q to be deleted before deleting SC %q. see https://lightbitslabs.atlassian.net/browse/LBM1-19772",
+			sourcePVC.Namespace, sourcePVC.Name, pv.Name, class.Name)
+		framework.ExpectNoError(e2epv.WaitForPersistentVolumeDeleted(client, pv.Name, 5*time.Second, 30*time.Second))
+
 		if class != nil {
 			framework.Logf("deleting class %q", class.Name)
 			err := client.StorageV1().StorageClasses().Delete(context.TODO(), class.Name, metav1.DeleteOptions{})
