@@ -261,12 +261,20 @@ func (s *snapshottableTestSuite) DefineTests(driver TestDriver, pattern testpatt
 				restoredPVC, err = cs.CoreV1().PersistentVolumeClaims(restoredPVC.Namespace).Create(context.TODO(), restoredPVC, metav1.CreateOptions{})
 				framework.ExpectNoError(err)
 				cleanupSteps = append(cleanupSteps, func() {
+					pv, err := getBoundPV(cs, restoredPVC)
+					framework.ExpectNoError(err)
+
 					framework.Logf("deleting claim %q/%q", restoredPVC.Namespace, restoredPVC.Name)
 					// typically this claim has already been deleted
 					err = cs.CoreV1().PersistentVolumeClaims(restoredPVC.Namespace).Delete(context.TODO(), restoredPVC.Name, metav1.DeleteOptions{})
 					if err != nil && !apierrors.IsNotFound(err) {
 						framework.Failf("Error deleting claim %q. Error: %v", restoredPVC.Name, err)
 					}
+
+					framework.Logf("poll 30s for claim's %q/%q PV %q to be deleted before deleting SC %q. see https://lightbitslabs.atlassian.net/browse/LBM1-19772",
+						restoredPVC.Namespace, restoredPVC.Name, pv.Name, sc.Name)
+					framework.ExpectNoError(e2epv.WaitForPersistentVolumeDeleted(cs, pv.Name, 5*time.Second, 30*time.Second))
+
 				})
 
 				ginkgo.By("starting a pod to use the claim")
