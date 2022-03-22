@@ -329,6 +329,10 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				framework.Logf("deleting restored pod %q/%q", restoredPod.Namespace, restoredPod.Name)
 				err = cs.CoreV1().Pods(restoredPod.Namespace).Delete(context.TODO(), restoredPod.Name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err)
+
+				pv, err := getBoundPV(cs, restoredPVC)
+				framework.ExpectNoError(err)
+
 				framework.Logf("deleting restored PVC %q/%q", restoredPVC.Namespace, restoredPVC.Name)
 				err = cs.CoreV1().PersistentVolumeClaims(restoredPVC.Namespace).Delete(context.TODO(), restoredPVC.Name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err)
@@ -346,6 +350,11 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 					err = utils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), 1*time.Second /* poll */, 30*time.Second /* timeout */)
 					framework.ExpectError(err)
 				}
+
+				framework.Logf("poll 120s for claim's %q/%q PV %q to be deleted before deleting SC %q. see https://lightbitslabs.atlassian.net/browse/LBM1-19772",
+					restoredPVC.Namespace, restoredPVC.Name, pv.Name, sc.Name)
+				framework.ExpectNoError(e2epv.WaitForPersistentVolumeDeleted(cs, pv.Name, 5*time.Second, 120*time.Second))
+
 			})
 		})
 	})
