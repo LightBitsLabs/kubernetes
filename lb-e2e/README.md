@@ -94,3 +94,18 @@ Outcome will be placed at: `./_output/dockerized/bin/linux/amd64/e2e.test`
 ```bash
 make -f lb-e2e/Makefile build-deps image-build image-push
 ```
+
+### Generate kubernetes-test-linux-amd64.tar.gz tarball
+
+Now that we have the 2 binaries under `./_output/local/bin/linux/amd64/ginkgo` and `./_output/dockerized/bin/linux/amd64/e2e.test`
+we need to pack them into a tarball to upload to the release
+
+```bash
+mkdir -p /tmp/e2e/kubernetes/test/bin
+cp ./_output/dockerized/bin/linux/amd64/e2e.test ./_output/local/bin/linux/amd64/ginkgo /tmp/e2e/kubernetes/test/bin
+pushd /tmp/e2e/
+tar -czvf kubernetes-test-linux-amd64.tar.gz kubernetes/
+popd
+```
+
+Now we would need to upload the outcome `kubernetes-test-linux-amd64.tar.gz` to the release through the UI by pressing edit and upload
