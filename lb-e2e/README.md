@@ -37,6 +37,7 @@ If they acknowledge the issue but will fix it later or will not port it to older
 3. We will apply fixes only on formal tags.
 4. Each k8s release will have a single branch named: `${tag_name}-lightbits` which will contain all patches we need for this version.
     for example for tag: `v1.19.9` we will have `v1.19.9-lightbits` branch.
+
 ### Add a fix to the e2e test suite
 
 We will first clone the repository.
@@ -49,12 +50,23 @@ git clone https://github.com/LightBitsLabs/kubernetes
 Checkout the specific tag we want into a new branch named `${CLUSTER_VERSION}-lightbits`
 
 ```bash
-git checkout -b ${CLUSTER_VERSION}-lightbits ${CLUSTER_VERSION}
+git checkout -b ${CLUSTER_VERSION}-branch ${CLUSTER_VERSION}
+```
 
 Apply the patches... and push it to the origin.
 
+```bash
+git push origin ${CLUSTER_VERSION}-branch
+```
+
+Merge the code and then create a tag under the name:
+
+```bash
+git tag -a ${CLUSTER_VERSION}-lightbits -m "A release based on ${CLUSTER_VERSION} with patches for e2e tests"
 git push origin ${CLUSTER_VERSION}-lightbits
 ```
+
+## Compile test binaries and generate test tarball artifacts
 
 ### Generate `ginkgo` binary
 
