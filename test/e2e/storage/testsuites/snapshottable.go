@@ -29,6 +29,7 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/component-helpers/storage/ephemeral"
@@ -180,6 +181,10 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				// delete the pod at the end of the test
 				cleanupSteps = append(cleanupSteps, func() {
 					e2epod.DeletePodWithWait(cs, pod)
+
+					ginkgo.By(fmt.Sprintf("Checking for residual PersistentVolumes associated with StorageClass %s", sc.Name))
+					residualPVs, err := waitForProvisionedVolumesDeleted(cs, sc.Name)
+					framework.ExpectNoError(err, "PersistentVolumes were not deleted as expected. %d remain", len(residualPVs))
 				})
 
 				// We can test snapshotting of generic
@@ -272,6 +277,35 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				}
 
 				restoredPod = StartInPodWithVolumeSource(cs, volSrc, restoredPVC.Namespace, "restored-pvc-tester", "sleep 300", config.ClientNodeSelection)
+
+				// we must cleanup the PVC of each POD and the PV before we can continue to delete SC
+				// cause we must use the SC to access the API.
+				cleanupSteps = append(cleanupSteps, func() {
+					for _, vol := range restoredPod.Spec.Volumes {
+						pvcSource := vol.VolumeSource.PersistentVolumeClaim
+						if pvcSource != nil {
+							framework.Logf("following vols are related to restoredPod: %s: pvc-name: %s", restoredPod.Name, pvcSource.ClaimName)
+							pvc1, err := cs.CoreV1().PersistentVolumeClaims(restoredPod.Namespace).Get(context.TODO(), pvcSource.ClaimName, metav1.GetOptions{})
+							framework.ExpectNoError(err, "get PVC")
+
+							boundPV, err := getBoundPV(cs, pvc1)
+							framework.ExpectNoError(err, "get Bound PV for pvc: %s/%s", pvc1.Namespace, pvc1.Name)
+
+							framework.Logf("deleting claim %q/%q", pvc1.Namespace, pvc1.Name)
+							// typically this claim has already been deleted
+							err = cs.CoreV1().PersistentVolumeClaims(pvc1.Namespace).Delete(context.TODO(), pvc1.Name, metav1.DeleteOptions{})
+							if err != nil && !apierrors.IsNotFound(err) {
+								framework.Failf("Error deleting claim %q. Error: %v", restoredPVC.Name, err)
+							}
+							err = e2epv.WaitForPersistentVolumeDeleted(cs, boundPV.Name, 5*time.Second, f.Timeouts.PVDelete)
+							if err != nil {
+								framework.Logf("persistent Volume %v not deleted by dynamic provisioner: %w", boundPV.Name, err)
+								continue
+							}
+						}
+					}
+				})
+
 				cleanupSteps = append(cleanupSteps, func() {
 					StopPod(cs, restoredPod)
 				})
@@ -453,6 +487,9 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 					if err != nil && !apierrors.IsNotFound(err) {
 						framework.Failf("Error deleting claim %q. Error: %v", restoredPVC.Name, err)
 					}
+					framework.Logf("waiting for 20s for PVC to delete - for some reason if we dont do this wait we will have leftover PV")
+					time.Sleep(20 * time.Second)
+					framework.Logf("after the sleep of 20s - hope now it will get deleted")
 				})
 
 				ginkgo.By("starting a pod to use the snapshot")
@@ -495,4 +532,33 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 			})
 		})
 	})
+}
+
+// waitForProvisionedVolumesDelete is a polling wrapper to scan all PersistentVolumes for any associated to the test's
+// StorageClass.  Returns either an error and nil values or the remaining PVs and their count.
+func waitForProvisionedVolumesDeleted(c clientset.Interface, scName string) ([]*v1.PersistentVolume, error) {
+	var remainingPVs []*v1.PersistentVolume
+
+	err := wait.Poll(10*time.Second, 300*time.Second, func() (bool, error) {
+		remainingPVs = []*v1.PersistentVolume{}
+
+		allPVs, err := c.CoreV1().PersistentVolumes().List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			return true, err
+		}
+		for _, pv := range allPVs.Items {
+			if pv.Spec.StorageClassName == scName {
+				pv := pv
+				remainingPVs = append(remainingPVs, &pv)
+			}
+		}
+		if len(remainingPVs) > 0 {
+			return false, nil // Poll until no PVs remain
+		}
+		return true, nil // No PVs remain
+	})
+	if err != nil {
+		return remainingPVs, fmt.Errorf("error waiting for PVs to be deleted: %v", err)
+	}
+	return nil, nil
 }
